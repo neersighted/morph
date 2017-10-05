@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+function morph () {
+  echo "$@" | socat - UNIX-CONNECT:/var/run/morph.sock
+}
+
+morph 'usb attach hyde 04d9:0169' # keyboard
+morph 'usb attach hyde 046d:c07d' # mouse
+morph 'usb attach hyde 077d:0410' # powermate
+morph 'usb attach hyde 28de:1142' # steam controller
+morph 'ddc 2 0x60 0x10' # mon 2, dp-1
+morph 'ddc 1 0x60 0x10' # mon 1, dp-1

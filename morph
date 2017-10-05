@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+
+import libvirt
+import socketserver
+import socket
+import subprocess
+import sys
+import systemd.daemon
+import systemd.journal
+
+APP = 'morph'
+
+
+class MorphHandler(socketserver.StreamRequestHandler):
+    def setup(self):
+        self.libvirt = libvirt.open('qemu:///system')
+        return super().setup()
+
+    def finish(self):
+        self.libvirt.close()
+        return super().finish()
+
+    def handle(self):
+        for command in self.rfile:
+            action, *data = command.strip().decode('utf-8').split(' ')
+            if action == 'usb':
+                self.handle_usb(data[0], data[1], data[2:])
+            elif action == 'ddc':
+                self.handle_ddc(data[0], data[1], data[2])
+
+    def handle_usb(self, action, vm, devices):
+        if action not in ('attach', 'detach'):
+            print('usb: invalid action: {}'.format(action))
+            return
+
+        try:
+            vm = self.libvirt.lookupByName(vm)
+        except libvirt.libvirtError as e:
+            print('usb: libvirt error: {}'.format(e))
+            return
+
+        if not vm.isActive():
+            print('usb: inactive vm: {}'.format(vm.name()))
+            return
+
+        for device in devices:
+            print('usb: {} {} {}'.format(action, vm.name(), device))
+
+            xml = """
+                <hostdev mode='subsystem' type='usb'>
+                    <source>
+                        <vendor id='0x{}'/>
+                        <product id='0x{}'/>
+                    </source>
+                </hostdev>
+            """.format(*device.split(':'))
+
+            try:
+                if action == 'attach':
+                    vm.attachDevice(xml)
+                elif action == 'detach':
+                    vm.detachDevice(xml)
+            except libvirt.libvirtError as e:
+                print('usb: libvirt error: {}'.format(e))
+                return False
+        return True
+
+    def handle_ddc(self, display, register, value):
+        print('ddc: {} {} {}'.format(display, register, value))
+        return subprocess.call(['ddcutil',
+                                'setvcp',
+                                '--display',
+                                display,
+                                register,
+                                value]) == 0
+
+
+class SocketActivatedServer(socketserver.TCPServer):
+    def __init__(self, RequestHandlerClass):
+        super().__init__(None, RequestHandlerClass, bind_and_activate=False)
+        self.socket.close()
+        self.socket = socket.fromfd(systemd.daemon.listen_fds()[0],
+                                    socket.AF_INET, socket.SOCK_STREAM)
+        systemd.daemon.notify('READY=1')
+
+
+class ThreadedSocketActivatedServer(socketserver.ThreadingMixIn,
+                                    SocketActivatedServer):
+    pass
+
+
+if __name__ == '__main__':
+    sys.stdout = systemd.journal.stream(APP)
+    server = ThreadedSocketActivatedServer(MorphHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        exit(-1)
